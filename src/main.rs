@@ -1,10 +1,11 @@
 use anyhow::Ok;
 use std::collections::HashMap;
-use std::fmt::format;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
-type Db = HashMap<String, String>;
+type Db = Arc<Mutex<HashMap<String, String>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -12,13 +13,13 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("Mini redis listening : {}", addr);
 
-    let db: Db = HashMap::new();
+    let db: Db = Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         let (socket, addr) = listener.accept().await?;
         println!("New connection: {}", addr);
 
-        let db = db.clone();
+        let db = Arc::clone(&db);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(socket, db).await {
                 println!("Error handling: {}: {:?}", addr, e);
@@ -27,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn handle_connection(mut socket: TcpStream, mut db: Db) -> anyhow::Result<()> {
+async fn handle_connection(mut socket: TcpStream, db: Db) -> anyhow::Result<()> {
     let (reader, mut writer) = socket.split();
 
     let mut buf_reader = BufReader::new(reader);
@@ -50,9 +51,9 @@ async fn handle_connection(mut socket: TcpStream, mut db: Db) -> anyhow::Result<
             "PING" => {
                 writer.write_all(b"+PONG\r\n").await?;
             }
-            "GET" => {
-                let key = parts.get(1).unwrap_or(&"");
-                if let Some(value) = db.get(*key) {
+            "GET" if parts.len() == 2 => {
+                let key = parts[1];
+                if let Some(value) = db.lock().await.get(key) {
                     writer
                         .write_all(format!("{} {}\r\n", value.len(), value).as_bytes())
                         .await?;
@@ -60,19 +61,20 @@ async fn handle_connection(mut socket: TcpStream, mut db: Db) -> anyhow::Result<
                     writer.write_all(b"$-1\r\n").await?;
                 }
             }
-            "SET" => {
+            "SET" if parts.len() >= 3 => {
                 let key = parts[1].to_owned();
                 let value = parts[2].to_owned();
-                db.insert(key, value);
+                db.lock().await.insert(key, value);
+                writer.write_all(b"+OK\r\n").await?;
             }
-            "DEL" => {
+            "DEL" if parts.len() == 2 => {
                 let key = parts[1];
-                db.remove(key);
+                db.lock().await.remove(key);
             }
-            "EXISTS" => {
+            "EXISTS" if parts.len() == 2 => {
                 let key = parts[1];
                 let mut value = 0;
-                if db.contains_key(key) {
+                if db.lock().await.contains_key(key) {
                     value = 1;
                 }
 
