@@ -5,6 +5,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
+pub mod commands;
 type Db = Arc<Mutex<HashMap<String, String>>>;
 
 #[tokio::main]
